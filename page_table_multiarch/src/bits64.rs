@@ -8,6 +8,7 @@ use crate::{
 };
 
 const ENTRY_COUNT: usize = 512;
+const PAGE_SIZE_2M: usize = PageSize::Size2M as usize;
 
 const fn p4_index(vaddr: usize) -> usize {
     (vaddr >> (12 + 27)) & (ENTRY_COUNT - 1)
@@ -448,6 +449,29 @@ impl<'a, M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64Mut<'a
             vaddr_usize,
             vaddr_usize + size,
         );
+
+        if vaddr_usize % PAGE_SIZE_2M == 0 && size >= PAGE_SIZE_2M {
+            while size >= PAGE_SIZE_2M {
+                let p3 = if M::LEVELS == 3 {
+                    self.table_of(self.root_paddr())
+                } else if M::LEVELS == 4 {
+                    let p4 = self.table_of(self.root_paddr());
+                    let p4e = &p4[p4_index(vaddr_usize)];
+                    self.next_table(p4e)?
+                } else {
+                    unreachable!()
+                };
+                let p3e = &p3[p3_index(vaddr_usize)];
+    
+                let p2 = self.next_table_mut(p3e)?;
+                let p2e = &mut p2[p2_index(vaddr_usize)];
+                self.dealloc_tree(p2e.paddr(), M::LEVELS - 2);
+                p2e.clear();
+                size -= PAGE_SIZE_2M;
+                vaddr_usize += PAGE_SIZE_2M;
+            }
+        }
+        
         while size > 0 {
             let vaddr = vaddr_usize.into();
             let (_, _, page_size) = self
@@ -549,38 +573,28 @@ impl<'a, M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64Mut<'a
         }
         self.flush = ToFlush::None;
     }
-    /// Collapse 4Kib pages into 
-    /// 2MiB page
-    pub fn collapse_2m(
-        &mut self,
-        vaddr: M::VirtAddr,
-        paddr: PhysAddr,
-        flags: MappingFlags,
-    ) -> PagingResult {
-        
-        let vaddr: usize = vaddr.into();
-        let p3 = if M::LEVELS == 3 {
-            self.table_of(self.root_paddr())
-        } else if M::LEVELS == 4 {
-            let p4 = self.table_of(self.root_paddr());
-            let p4e = &p4[p4_index(vaddr)];
-            self.next_table(p4e)?
-        } else {
-            unreachable!()
-        };
-        let p3e = &p3[p3_index(vaddr)];
 
-        let p2 = self.next_table_mut(p3e)?;
-        let p2e = &mut p2[p2_index(vaddr)];
-        self.dealloc_tree(p2e.paddr(), M::LEVELS - 2);
-        p2e.clear();
+    // Unmaps a 2 MiB region at `vaddr` (clears the L2 entry) and frees the
+    // underlying L1 page table (subtree rooted at the L2 entry's `paddr()`).
+    // pub fn unmap_2m_and_free_pt(&mut self, vaddr: M::VirtAddr) {
+    //     let vaddr: usize = vaddr.into();
+    //     let p3 = if M::LEVELS == 3 {
+    //         self.table_of(self.root_paddr())
+    //     } else if M::LEVELS == 4 {
+    //         let p4 = self.table_of(self.root_paddr());
+    //         let p4e = &p4[p4_index(vaddr)];
+    //         self.next_table(p4e)?
+    //     } else {
+    //         unreachable!()
+    //     };
+    //     let p3e = &p3[p3_index(vaddr)];
 
-        let page_size = PageSize::Size2M;
-        self.map(vaddr.into(), paddr, page_size, flags).inspect_err(|e| {
-            error!("failed to map page: {vaddr:#x?}({page_size:?}) -> {paddr:#x?}, {e:?}")
-        })?;
-        Ok(())
-    }
+    //     let p2 = self.next_table_mut(p3e)?;
+    //     let p2e = &mut p2[p2_index(vaddr)];
+    //     self.dealloc_tree(p2e.paddr(), M::LEVELS - 2);
+    //     p2e.clear();
+    //     // Ok(())
+    // }
 }
 
 impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> Drop for PageTable64Mut<'_, M, PTE, H> {
