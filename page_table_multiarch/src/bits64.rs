@@ -8,7 +8,6 @@ use crate::{
 };
 
 const ENTRY_COUNT: usize = 512;
-const PAGE_SIZE_2M: usize = PageSize::Size2M as usize;
 
 const fn p4_index(vaddr: usize) -> usize {
     (vaddr >> (12 + 27)) & (ENTRY_COUNT - 1)
